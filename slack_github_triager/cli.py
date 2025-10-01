@@ -135,9 +135,26 @@ def triage(
             ChannelSummary(channel=channel, pr_infos=tuple(pr_infos_for_channel))
         )
 
+    reaction_configuration = ReactionConfiguration(
+        bot_approved=CONFIG.get(ConfigKey.REACTION_APPROVAL_FROM_BOT),
+        bot_considers_approved=set(
+            CONFIG.get(ConfigKey.REACTION_APPROVAL_RECOGNIZED_CSV).split(",")
+        ),
+        bot_commented=CONFIG.get(ConfigKey.REACTION_COMMENTED_FROM_BOT),
+        bot_considers_commented=set(
+            CONFIG.get(ConfigKey.REACTION_COMMENTED_RECOGNIZED_CSV).split(",")
+        ),
+        bot_merged=CONFIG.get(ConfigKey.REACTION_MERGED_FROM_BOT),
+        bot_considers_merged=set(
+            CONFIG.get(ConfigKey.REACTION_MERGED_RECOGNIZED_CSV).split(",")
+        ),
+        bot_confused=CONFIG.get(ConfigKey.REACTION_CONFUSED_FROM_BOT),
+    )
+
     send_dm_message(
         client=client,
         slack_subdomain=CONFIG.get(ConfigKey.SUBDOMAIN),
+        reaction_configuration=reaction_configuration,
         channel_summaries=channel_summaries,
         start_time=since,
         end_time=now,
@@ -147,26 +164,12 @@ def triage(
     # Send channel-specific reactions and summaries
     for summary in channel_summaries:
         if allow_reactions:
-            reaction_configuration = ReactionConfiguration(
-                bot_approved=CONFIG.get(ConfigKey.REACTION_APPROVAL_FROM_BOT),
-                bot_considers_approved=set(
-                    CONFIG.get(ConfigKey.REACTION_APPROVAL_RECOGNIZED_CSV).split(",")
-                ),
-                bot_commented=CONFIG.get(ConfigKey.REACTION_COMMENTED_FROM_BOT),
-                bot_considers_commented=set(
-                    CONFIG.get(ConfigKey.REACTION_COMMENTED_RECOGNIZED_CSV).split(",")
-                ),
-                bot_merged=CONFIG.get(ConfigKey.REACTION_MERGED_FROM_BOT),
-                bot_considers_merged=set(
-                    CONFIG.get(ConfigKey.REACTION_MERGED_RECOGNIZED_CSV).split(",")
-                ),
-                bot_confused=CONFIG.get(ConfigKey.REACTION_CONFUSED_FROM_BOT),
-            )
             react_to_pr_infos(client, summary, reaction_configuration)
 
         send_channel_message(
             client=client,
             slack_subdomain=CONFIG.get(ConfigKey.SUBDOMAIN),
+            reaction_configuration=reaction_configuration,
             summary=summary,
             start_time=since,
             end_time=now,

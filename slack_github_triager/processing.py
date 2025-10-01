@@ -14,15 +14,33 @@ from slack_github_triager.slack import (
     ChannelInfo,
     emoji_react,
     has_recent_matching_message,
+    slack_format_relative_time,
 )
 from slack_github_triager.slack_client import (
     SlackRequestClient,
 )
-from slack_github_triager.utils import format_relative_time
 
 ################################################################################
 # Data classes
 ################################################################################
+
+
+@dataclass(frozen=True)
+class ReactionConfiguration:
+    bot_approved: str = "white_check_mark"
+    bot_considers_approved: set[str] = field(
+        default_factory=lambda: {"white_check_mark"}
+    )
+
+    bot_merged: str = "package"
+    bot_considers_merged: set[str] = field(default_factory=lambda: {"package"})
+
+    bot_commented: str = "speech_balloon"
+    bot_considers_commented: set[str] = field(
+        default_factory=lambda: {"speech_balloon"}
+    )
+
+    bot_confused: str = "robot_face"
 
 
 @dataclass(frozen=True)
@@ -39,22 +57,30 @@ class PrSlackInfo:
     pr: PrInfo
     message: ProcessedSlackMessage
 
-    def generate_bullet(self, slack_subdomain: str) -> str:
+    def generate_bullet(
+        self, slack_subdomain: str, reaction_configuration: ReactionConfiguration
+    ) -> str:
         """Generate a bullet point with PR link and message link."""
         pr_match = re.search(r"/(\w+)/pull/(\d+)", self.pr.url)
         if not pr_match:
             base = f"{self.pr.url} by {self.pr.author}"
         else:
             repo, pr_num = pr_match.groups()
-            pr_link = f"<{self.pr.url}|{repo}#{pr_num}>"
-            message_link = f"<https://{slack_subdomain}web.slack.com/archives/{self.message.channel_id}/p{self.message.ts.replace('.', '')}|review request>"
-            base = f"{pr_link} by {self.pr.author} ({message_link})"
+            pr_link = f"<{self.pr.url}|{self.pr.title}>"
+            original_thread_link = f"<https://{slack_subdomain}web.slack.com/archives/{self.message.channel_id}/p{self.message.ts.replace('.', '')}|thread> {slack_format_relative_time(float(self.message.ts))}"
+            base = f"{pr_link} by {self.pr.author} ({original_thread_link})"
 
-        # Add speech balloon notation for commented PRs
-        if self.pr.status == PrStatus.COMMENTED:
-            return f"• (:speech_balloon:) {base}"
+        match self.pr.status:
+            case PrStatus.COMMENTED:
+                prefix = f"(:{reaction_configuration.bot_commented}:) "
+            case PrStatus.APPROVED:
+                prefix = f"(:{reaction_configuration.bot_approved}:) "
+            case PrStatus.MERGED:
+                prefix = f"(:{reaction_configuration.bot_merged}:) "
+            case _:
+                prefix = ""
 
-        return f"• {base}"
+        return f"• {prefix}{base}"
 
 
 @dataclass(frozen=True)
@@ -76,11 +102,15 @@ AUTOMATION_MESSAGE_PREFIX = ":robot_dance: I am an automation!"
 
 
 def build_dm_message(
-    slack_subdomain: str, channel_summaries: list[ChannelSummary], start_time, end_time
+    slack_subdomain: str,
+    reaction_configuration: ReactionConfiguration,
+    channel_summaries: list[ChannelSummary],
+    start_time: float,
+    end_time: float,
 ):
     """Build the comprehensive DM message with all channels."""
-    start_relative = format_relative_time(start_time)
-    end_relative = format_relative_time(end_time)
+    start_relative = slack_format_relative_time(start_time)
+    end_relative = slack_format_relative_time(end_time)
 
     message_lines = [
         f"{AUTOMATION_MESSAGE_PREFIX} I reviewed messages from {start_relative} to {end_relative}. The following PRs need attention:"
@@ -88,17 +118,20 @@ def build_dm_message(
 
     # Show all channels, even those with no work needed
     for summary in channel_summaries:
-        message_lines.append(f"\n#{summary.channel.name}:")
-
+        message_lines.append(f"\n\n<#{summary.channel.id}|{summary.channel.name}>:")
         needs_work_pr_infos = summary.pr_infos_for_status(PrStatus.NEEDS_WORK)
         commented_pr_infos = summary.pr_infos_for_status(PrStatus.COMMENTED)
 
         if needs_work_pr_infos or commented_pr_infos:
             # Channel has PRs needing attention - show NEEDS_WORK first, then COMMENTED
             for pr_info in needs_work_pr_infos:
-                message_lines.append(pr_info.generate_bullet(slack_subdomain))
+                message_lines.append(
+                    pr_info.generate_bullet(slack_subdomain, reaction_configuration)
+                )
             for pr_info in commented_pr_infos:
-                message_lines.append(pr_info.generate_bullet(slack_subdomain))
+                message_lines.append(
+                    pr_info.generate_bullet(slack_subdomain, reaction_configuration)
+                )
         else:
             # No PRs needing attention in this channel
             message_lines.append("• No PRs need attention")
@@ -109,6 +142,7 @@ def build_dm_message(
 def send_dm_message(
     client: SlackRequestClient,
     slack_subdomain: str,
+    reaction_configuration: ReactionConfiguration,
     channel_summaries: list[ChannelSummary],
     start_time: float,
     end_time: float,
@@ -116,7 +150,9 @@ def send_dm_message(
     suppress_message: bool = False,
 ) -> None:
     # Send DM with comprehensive summary
-    dm_text = build_dm_message(slack_subdomain, channel_summaries, start_time, end_time)
+    dm_text = build_dm_message(
+        slack_subdomain, reaction_configuration, channel_summaries, start_time, end_time
+    )
 
     # Open DM channel and send message
     for user_id in user_ids:
@@ -141,21 +177,24 @@ def send_dm_message(
 
 def build_channel_message(
     slack_subdomain: str,
+    reaction_configuration: ReactionConfiguration,
     prs: list[PrSlackInfo],
-    channel_name: str,
+    channel: ChannelInfo,
     start_time: float,
     end_time: float,
 ) -> str:
     """Build a channel-specific summary message."""
-    start_relative = format_relative_time(start_time)
-    end_relative = format_relative_time(end_time)
-
     message_lines = [
-        f"{AUTOMATION_MESSAGE_PREFIX} I reviewed messages in #{channel_name} from {start_relative} to {end_relative} :robot_dance:.\n\nIt looks like the following PRs might require attention:"
+        f"{AUTOMATION_MESSAGE_PREFIX} I reviewed messages in <#{channel.id}|{channel.name}> "
+        + f"from {slack_format_relative_time(start_time)} to "
+        + f"{slack_format_relative_time(end_time)} :robot_dance:.\n\n"
+        + "It looks like the following PRs might require attention:"
     ]
 
     for pr_info in prs:
-        message_lines.append(pr_info.generate_bullet(slack_subdomain))
+        message_lines.append(
+            pr_info.generate_bullet(slack_subdomain, reaction_configuration)
+        )
 
     return "\n".join(message_lines)
 
@@ -163,6 +202,7 @@ def build_channel_message(
 def send_channel_message(
     client: SlackRequestClient,
     slack_subdomain: str,
+    reaction_configuration: ReactionConfiguration,
     summary: ChannelSummary,
     start_time: float,
     end_time: float,
@@ -185,8 +225,9 @@ def send_channel_message(
     # Build and send channel message
     channel_text = build_channel_message(
         slack_subdomain,
+        reaction_configuration,
         all_review_prs,
-        summary.channel.name,
+        summary.channel,
         start_time,
         end_time,
     )
@@ -211,24 +252,6 @@ def send_channel_message(
 ################################################################################
 # Reaction handling
 ################################################################################
-
-
-@dataclass(frozen=True)
-class ReactionConfiguration:
-    bot_approved: str = "white_check_mark"
-    bot_considers_approved: set[str] = field(
-        default_factory=lambda: {"white_check_mark"}
-    )
-
-    bot_merged: str = "package"
-    bot_considers_merged: set[str] = field(default_factory=lambda: {"package"})
-
-    bot_commented: str = "speech_balloon"
-    bot_considers_commented: set[str] = field(
-        default_factory=lambda: {"speech_balloon"}
-    )
-
-    bot_confused: str = "robot_face"
 
 
 def react_to_pr_infos(
