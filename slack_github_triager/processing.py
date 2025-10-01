@@ -61,14 +61,10 @@ class PrSlackInfo:
         self, slack_subdomain: str, reaction_configuration: ReactionConfiguration
     ) -> str:
         """Generate a bullet point with PR link and message link."""
-        pr_match = re.search(r"/(\w+)/pull/(\d+)", self.pr.url)
-        if not pr_match:
-            base = f"{self.pr.url} by {self.pr.author}"
-        else:
-            repo, pr_num = pr_match.groups()
-            pr_link = f"<{self.pr.url}|{self.pr.title}>"
-            original_thread_link = f"<https://{slack_subdomain}web.slack.com/archives/{self.message.channel_id}/p{self.message.ts.replace('.', '')}|thread> {slack_format_relative_time(float(self.message.ts))}"
-            base = f"{pr_link} by {self.pr.author} ({original_thread_link})"
+
+        pr_link = f"<{self.pr.url}|{self.pr.title}>"
+        original_thread_link = f"<https://{slack_subdomain}web.slack.com/archives/{self.message.channel_id}/p{self.message.ts.replace('.', '')}|thread> {slack_format_relative_time(float(self.message.ts))}"
+        base = f"{pr_link} by {self.pr.author} in `{self.pr.repo}` ({original_thread_link})"
 
         match self.pr.status:
             case PrStatus.COMMENTED:
@@ -92,7 +88,10 @@ class ChannelSummary:
 
     @functools.lru_cache()
     def pr_infos_for_status(self, status: PrStatus) -> list[PrSlackInfo]:
-        return [pr_info for pr_info in self.pr_infos if pr_info.pr.status == status]
+        return sorted(
+            [pr_info for pr_info in self.pr_infos if pr_info.pr.status == status],
+            key=lambda x: (x.pr.repo, x.message.ts),
+        )
 
 
 ################################################################################
@@ -377,37 +376,3 @@ def process_slack_message(
         )
 
     return result_pr_infos
-
-
-def send_all_notifications(
-    client: SlackRequestClient,
-    slack_subdomain: str,
-    channel_summaries: list[ChannelSummary],
-    start_time: float,
-    end_time: float,
-    user_id: str,
-    suppress_dm: bool = False,
-    suppress_channels: bool = False,
-) -> None:
-    """Send both DM and channel notifications."""
-
-    send_dm_message(
-        client=client,
-        slack_subdomain=slack_subdomain,
-        channel_summaries=channel_summaries,
-        start_time=start_time,
-        end_time=end_time,
-        user_ids=[user_id],
-        suppress_message=suppress_dm,
-    )
-
-    # Send channel-specific summaries
-    for summary in channel_summaries:
-        send_channel_message(
-            client=client,
-            slack_subdomain=slack_subdomain,
-            summary=summary,
-            start_time=start_time,
-            end_time=end_time,
-            suppress_message=suppress_channels,
-        )

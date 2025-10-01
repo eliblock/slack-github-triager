@@ -14,6 +14,8 @@ class PrStatus(Enum):
 
 @dataclass(frozen=True)
 class PrInfo:
+    repo: str
+    number: int
     url: str
     status: PrStatus
     author: str
@@ -63,11 +65,25 @@ def check_pr_status(pr_url: str) -> PrInfo:
     title = pr.get("title", f"{owner}/{repo}#{pr_number}")
 
     if pr.get("mergedAt"):
-        return PrInfo(url=pr_url, status=PrStatus.MERGED, author=author, title=title)
+        return PrInfo(
+            repo=repo,
+            number=pr_number,
+            url=pr_url,
+            status=PrStatus.MERGED,
+            author=author,
+            title=title,
+        )
 
     # Check review decision
     if pr.get("reviewDecision") == "APPROVED":
-        return PrInfo(url=pr_url, status=PrStatus.APPROVED, author=author, title=title)
+        return PrInfo(
+            repo=repo,
+            number=pr_number,
+            url=pr_url,
+            status=PrStatus.APPROVED,
+            author=author,
+            title=title,
+        )
 
     # Check if there are any human reviews (comments) but not approved
     # Filter out bot reviews and self-reviews
@@ -83,6 +99,20 @@ def check_pr_status(pr_url: str) -> PrInfo:
     ]
 
     if human_reviews:
-        return PrInfo(url=pr_url, status=PrStatus.COMMENTED, author=author, title=title)
+        return PrInfo(
+            repo=repo,
+            number=pr_number,
+            url=pr_url,
+            status=PrStatus.COMMENTED,
+            author=author,
+            title=title,
+        )
 
-    return PrInfo(url=pr_url, status=PrStatus.NEEDS_WORK, author=author, title=title)
+    return PrInfo(
+        repo=repo,
+        number=pr_number,
+        url=pr_url,
+        status=PrStatus.NEEDS_WORK,
+        author=author,
+        title=title,
+    )
