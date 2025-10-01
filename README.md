@@ -61,3 +61,8 @@ like:
 ```txt
 */5 * * * * <absolute-path-to-this-repo>/bin/run-in-uv.sh triage CHANNEL_ID --allow-reactions --allow-channel-messages --summary-dm-user-id USER_ID >>~/cron-stdout.log 2>>~/cron-stderr.log
 ```
+
+## Assets
+
+Some handy slackmoji are available in [`assets/`](./assets/), including `robot_dance` which is hardcoded into a message
+string.
