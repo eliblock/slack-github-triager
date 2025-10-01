@@ -9,7 +9,7 @@ from slack_github_triager.slack_client import (
 @dataclass(frozen=True)
 class ChannelInfo:
     id: str
-    name: str
+    name_with_id_fallback: str | None = None
 
 
 def emoji_react(

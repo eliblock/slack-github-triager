@@ -7,8 +7,10 @@ import click
 
 
 class ConfigKey(Enum):
+    SLACK_AUTH_PREFERENCE = "slack_auth_preference"
     SUBDOMAIN = "slack_subdomain"
     D_COOKIE = "slack_d_cookie"
+    SLACK_BOT_TOKEN = "slack_bot_token"
     SLACK_WEB_URL_BASE = "slack_web_url_base"
     REACTION_APPROVAL_FROM_BOT = "reaction_approval_from_bot_emoji"
     REACTION_APPROVAL_RECOGNIZED_CSV = "reaction_approval_recognized_emoji_csv"
@@ -17,6 +19,19 @@ class ConfigKey(Enum):
     REACTION_MERGED_FROM_BOT = "reaction_merged_from_bot_emoji"
     REACTION_MERGED_RECOGNIZED_CSV = "reaction_merged_recognized_emoji_csv"
     REACTION_CONFUSED_FROM_BOT = "reaction_confused_from_bot_emoji"
+
+    @classmethod
+    def required_keys(cls) -> list["ConfigKey"]:
+        return [
+            key
+            for key in cls
+            if key not in {ConfigKey.D_COOKIE, ConfigKey.SLACK_BOT_TOKEN}
+        ]
+
+
+class SlackAuthPreference(Enum):
+    BOT = "bot"
+    USER = "user"
 
 
 class ConfigManager:
@@ -43,8 +58,16 @@ class ConfigManager:
 
     def is_configured(self) -> bool:
         """Check if the config file has all the required keys."""
-        if not all(key.value in self.data for key in ConfigKey):
+        if not all(key.value in self.data for key in ConfigKey.required_keys()):
             return False
+
+        match self.get(ConfigKey.SLACK_AUTH_PREFERENCE):
+            case SlackAuthPreference.BOT.value:
+                if not self.get(ConfigKey.SLACK_BOT_TOKEN, required=False):
+                    return False
+            case SlackAuthPreference.USER.value:
+                if not self.get(ConfigKey.D_COOKIE, required=False):
+                    return False
 
         return True
 
@@ -181,15 +204,55 @@ def reload_config(
         ),
     )
 
-    if not config.get(ConfigKey.D_COOKIE, required=False) or click.confirm(
-        "Re-authenticate to Slack?"
-    ):
-        click.echo(
-            "Next we'll open a browser window. Log in to slack, and this script will capture your session cookie."
-        )
-        click.confirm("Enter y to continue...", abort=True)
-        config.upsert(
-            ConfigKey.D_COOKIE, d_cookie_fetcher(config.get(ConfigKey.SUBDOMAIN))
-        )
+    config.upsert(
+        ConfigKey.SLACK_AUTH_PREFERENCE,
+        click.prompt(
+            "Do you prefer to use a bot token or a user token?",
+            type=click.Choice(
+                [SlackAuthPreference.BOT.value, SlackAuthPreference.USER.value]
+            ),
+            default=config.get(ConfigKey.SLACK_AUTH_PREFERENCE, required=False),
+            show_default=True
+            if config.get(ConfigKey.SLACK_AUTH_PREFERENCE, required=False)
+            else False,
+        ),
+    )
 
-    click.echo("Configuration saved!\n")
+    match config.get(ConfigKey.SLACK_AUTH_PREFERENCE):
+        case SlackAuthPreference.BOT.value:
+            current_bot_token = config.get(ConfigKey.SLACK_BOT_TOKEN, required=False)
+            if not current_bot_token or click.confirm("Provide new bot token?"):
+                config.upsert(
+                    ConfigKey.SLACK_BOT_TOKEN,
+                    click.prompt(
+                        f"Provide your bot token{' (press enter to keep existing)' if current_bot_token else ''}",
+                        type=str,
+                        default=config.get(ConfigKey.SLACK_BOT_TOKEN, required=False),
+                        show_default=False,
+                    ),
+                )
+
+            if config.get(ConfigKey.D_COOKIE, required=False) and click.confirm(
+                "Clear your user auth token?"
+            ):
+                config.delete(ConfigKey.D_COOKIE)
+
+        case SlackAuthPreference.USER.value:
+            if not config.get(ConfigKey.D_COOKIE, required=False) or click.confirm(
+                "Re-authenticate to Slack?"
+            ):
+                click.echo(
+                    "Next we'll open a browser window. Log in to slack, and this script will capture your session cookie."
+                )
+                click.confirm("Enter y to continue...", abort=True)
+                config.upsert(
+                    ConfigKey.D_COOKIE,
+                    d_cookie_fetcher(config.get(ConfigKey.SUBDOMAIN)),
+                )
+
+            if config.get(ConfigKey.SLACK_BOT_TOKEN, required=False) and click.confirm(
+                "Clear your bot auth token?"
+            ):
+                config.delete(ConfigKey.SLACK_BOT_TOKEN)
+
+            click.echo("Configuration saved!\n")

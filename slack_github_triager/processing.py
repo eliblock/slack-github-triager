@@ -117,7 +117,9 @@ def build_dm_message(
 
     # Show all channels, even those with no work needed
     for summary in channel_summaries:
-        message_lines.append(f"\n\n<#{summary.channel.id}|{summary.channel.name}>:")
+        message_lines.append(
+            f"\n\n<#{summary.channel.id}|{summary.channel.name_with_id_fallback}>:"
+        )
         needs_work_pr_infos = summary.pr_infos_for_status(PrStatus.NEEDS_WORK)
         commented_pr_infos = summary.pr_infos_for_status(PrStatus.COMMENTED)
 
@@ -184,7 +186,7 @@ def build_channel_message(
 ) -> str:
     """Build a channel-specific summary message."""
     message_lines = [
-        f"{AUTOMATION_MESSAGE_PREFIX} I reviewed messages in <#{channel.id}|{channel.name}> "
+        f"{AUTOMATION_MESSAGE_PREFIX} I reviewed messages in <#{channel.id}|{channel.name_with_id_fallback}> "
         + f"from {slack_format_relative_time(start_time)} to "
         + f"{slack_format_relative_time(end_time)} :robot_dance:.\n\n"
         + "It looks like the following PRs might require attention:"
@@ -244,7 +246,7 @@ def send_channel_message(
     else:
         click.echo(channel_text)
     click.echo(
-        f"{'Would have sent' if suppress_message else 'Sent'} summary to #{summary.channel.name} with {len(all_review_prs)} PRs"
+        f"{'Would have sent' if suppress_message else 'Sent'} summary to #{summary.channel.name_with_id_fallback} with {len(all_review_prs)} PRs"
     )
 
 

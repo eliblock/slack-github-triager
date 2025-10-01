@@ -8,6 +8,7 @@ import click
 from slack_github_triager.config import (
     ConfigKey,
     ConfigManager,
+    SlackAuthPreference,
     reload_config,
 )
 from slack_github_triager.processing import (
@@ -22,6 +23,7 @@ from slack_github_triager.processing import (
 )
 from slack_github_triager.slack_client import (
     SlackRequestClient,
+    SlackRequestError,
     fetch_d_cookie,
     get_slack_tokens,
 )
@@ -37,16 +39,31 @@ CONFIG = ConfigManager()
 ################################################################################
 @functools.lru_cache()
 def get_slack_client() -> "SlackRequestClient":
-    token, enterprise_token = get_slack_tokens(
-        subdomain=CONFIG.get(ConfigKey.SUBDOMAIN),
-        d_cookie=CONFIG.get(ConfigKey.D_COOKIE),
-    )
-    return SlackRequestClient(
-        subdomain=CONFIG.get(ConfigKey.SUBDOMAIN),
-        token=token,
-        enterprise_token=enterprise_token,
-        cookie=CONFIG.get(ConfigKey.D_COOKIE),
-    )
+    match CONFIG.get(ConfigKey.SLACK_AUTH_PREFERENCE):
+        case SlackAuthPreference.BOT.value:
+            return SlackRequestClient(
+                subdomain=CONFIG.get(ConfigKey.SUBDOMAIN),
+                token=CONFIG.get(ConfigKey.SLACK_BOT_TOKEN),
+                enterprise_token="",
+                cookie="",
+                use_bot=True,
+            )
+        case SlackAuthPreference.USER.value:
+            token, enterprise_token = get_slack_tokens(
+                subdomain=CONFIG.get(ConfigKey.SUBDOMAIN),
+                d_cookie=CONFIG.get(ConfigKey.D_COOKIE),
+            )
+            return SlackRequestClient(
+                subdomain=CONFIG.get(ConfigKey.SUBDOMAIN),
+                token=token,
+                enterprise_token=enterprise_token,
+                cookie=CONFIG.get(ConfigKey.D_COOKIE),
+                use_bot=False,
+            )
+        case _:
+            raise ValueError(
+                f"Invalid slack auth preference: {CONFIG.get(ConfigKey.SLACK_AUTH_PREFERENCE)}"
+            )
 
 
 def ensure_configured(cmd):
@@ -77,10 +94,16 @@ def configure():
 @cli.command()
 @ensure_configured
 def hey():
-    profile = get_slack_client().get("/api/users.profile.get")
-    click.echo(
-        f"Hello {profile['profile']['display_name_normalized']} ({profile['profile']['email']})"
-    )
+    client = get_slack_client()
+    match CONFIG.get(ConfigKey.SLACK_AUTH_PREFERENCE):
+        case SlackAuthPreference.BOT.value:
+            auth_info = client.get("/api/auth.test")
+            click.echo(f"Hello {auth_info['user']}")
+        case SlackAuthPreference.USER.value:
+            profile = client.get("/api/users.profile.get")
+            click.echo(
+                f"Hello {profile['profile']['display_name_normalized']} ({profile['profile']['email']})"
+            )
 
 
 @cli.command()
@@ -102,20 +125,21 @@ def triage(
     now = datetime.now().timestamp()
 
     # Load info for each target channel
-    channels = [
-        ChannelInfo(
-            id=channel_id,
-            name=client.get("/api/conversations.info", params={"channel": channel_id})[
-                "channel"
-            ]["name"],
-        )
-        for channel_id in channel_ids
-    ]
+    channels = []
+    for channel_id in channel_ids:
+        try:
+            channel_name = client.get(
+                "/api/conversations.info", params={"channel": channel_id}
+            )["channel"]["name"]
+        except SlackRequestError:
+            click.echo("gracefully ignoring channel failure to fetch channel name...")
+            channel_name = channel_id
+        channels.append(ChannelInfo(id=channel_id, name_with_id_fallback=channel_name))
 
     channel_summaries = []
     total_messages = 0
     for channel in channels:
-        click.echo(f"Processing #{channel.name} ({channel.id})...")
+        click.echo(f"Processing #{channel.name_with_id_fallback} ({channel.id})...")
         messages = client.get(
             "/api/conversations.history",
             params={"channel": channel.id, "oldest": str(since)},

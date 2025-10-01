@@ -43,6 +43,38 @@ uv run triager triage CHANNEL_ID --allow-reactions --allow-channel-messages --su
 No guarantee of CLI-command level stability is offered between various commits
 to this tool.
 
+### user vs. bot mode
+
+While configuring the triager you will be prompted to proceed with `user` or `bot` mode.
+
+If you select `user` mode, you will be taken through web authentication.
+
+If you select `bot` mode, you will be prompted for a bot token. To get a bot token:
+1. Go to the [slack app dashboard](https://api.slack.com/apps) and click `Create New App`
+2. Provide a manifest based on the below sample, then complete setup
+3. Install the application in your organization (may require approval)
+
+#### Sample manifest
+
+```yml
+display_information:
+  name: PR Review Robot
+features:
+  bot_user:
+    display_name: PR Review Robot
+    always_online: false
+oauth_config:
+  scopes:
+    bot:
+      - channels:history
+      - chat:write
+      - im:write
+      - reactions:read
+      - reactions:write
+settings:
+  token_rotation_enabled: false
+```
+
 ## set up `cron`
 
 This tool can be run in a cron to auto-sort your channels every few minutes.
