@@ -1,0 +1,390 @@
+import functools
+import re
+from dataclasses import dataclass, field
+
+import click
+
+from slack_github_triager.github import (
+    PR_URL_PATTERN,
+    PrInfo,
+    PrStatus,
+    check_pr_status,
+)
+from slack_github_triager.slack import (
+    ChannelInfo,
+    emoji_react,
+    has_recent_matching_message,
+)
+from slack_github_triager.slack_client import (
+    SlackRequestClient,
+)
+from slack_github_triager.utils import format_relative_time
+
+################################################################################
+# Data classes
+################################################################################
+
+
+@dataclass(frozen=True)
+class ProcessedSlackMessage:
+    pr_urls: frozenset[str]
+    reactions: frozenset[str]
+    message_has_multiple_prs: bool
+    ts: str
+    channel_id: str
+
+
+@dataclass(frozen=True)
+class PrSlackInfo:
+    pr: PrInfo
+    message: ProcessedSlackMessage
+
+    def generate_bullet(self, slack_subdomain: str) -> str:
+        """Generate a bullet point with PR link and message link."""
+        pr_match = re.search(r"/(\w+)/pull/(\d+)", self.pr.url)
+        if not pr_match:
+            base = f"{self.pr.url} by {self.pr.author}"
+        else:
+            repo, pr_num = pr_match.groups()
+            pr_link = f"<{self.pr.url}|{repo}#{pr_num}>"
+            message_link = f"<https://{slack_subdomain}web.slack.com/archives/{self.message.channel_id}/p{self.message.ts.replace('.', '')}|review request>"
+            base = f"{pr_link} by {self.pr.author} ({message_link})"
+
+        # Add speech balloon notation for commented PRs
+        if self.pr.status == PrStatus.COMMENTED:
+            return f"• (:speech_balloon:) {base}"
+
+        return f"• {base}"
+
+
+@dataclass(frozen=True)
+class ChannelSummary:
+    channel: ChannelInfo
+    pr_infos: tuple[
+        PrSlackInfo, ...
+    ]  # tuple for immutability to enable @functools.lru_cache
+
+    @functools.lru_cache()
+    def pr_infos_for_status(self, status: PrStatus) -> list[PrSlackInfo]:
+        return [pr_info for pr_info in self.pr_infos if pr_info.pr.status == status]
+
+
+################################################################################
+# Message building & sending
+################################################################################
+AUTOMATION_MESSAGE_PREFIX = ":robot_dance: I am an automation!"
+
+
+def build_dm_message(
+    slack_subdomain: str, channel_summaries: list[ChannelSummary], start_time, end_time
+):
+    """Build the comprehensive DM message with all channels."""
+    start_relative = format_relative_time(start_time)
+    end_relative = format_relative_time(end_time)
+
+    message_lines = [
+        f"{AUTOMATION_MESSAGE_PREFIX} I reviewed messages from {start_relative} to {end_relative}. The following PRs need attention:"
+    ]
+
+    # Show all channels, even those with no work needed
+    for summary in channel_summaries:
+        message_lines.append(f"\n#{summary.channel.name}:")
+
+        needs_work_pr_infos = summary.pr_infos_for_status(PrStatus.NEEDS_WORK)
+        commented_pr_infos = summary.pr_infos_for_status(PrStatus.COMMENTED)
+
+        if needs_work_pr_infos or commented_pr_infos:
+            # Channel has PRs needing attention - show NEEDS_WORK first, then COMMENTED
+            for pr_info in needs_work_pr_infos:
+                message_lines.append(pr_info.generate_bullet(slack_subdomain))
+            for pr_info in commented_pr_infos:
+                message_lines.append(pr_info.generate_bullet(slack_subdomain))
+        else:
+            # No PRs needing attention in this channel
+            message_lines.append("• No PRs need attention")
+
+    return "\n".join(message_lines)
+
+
+def send_dm_message(
+    client: SlackRequestClient,
+    slack_subdomain: str,
+    channel_summaries: list[ChannelSummary],
+    start_time: float,
+    end_time: float,
+    user_ids: list[str],
+    suppress_message: bool = False,
+) -> None:
+    # Send DM with comprehensive summary
+    dm_text = build_dm_message(slack_subdomain, channel_summaries, start_time, end_time)
+
+    # Open DM channel and send message
+    for user_id in user_ids:
+        dm_channel = client.post("/api/conversations.open", data=[("users", user_id)])
+        if not suppress_message:
+            client.post(
+                "/api/chat.postMessage",
+                data=[
+                    ("channel", dm_channel["channel"]["id"]),
+                    ("text", dm_text),
+                    ("unfurl_links", "false"),
+                    ("unfurl_media", "false"),
+                ],
+            )
+
+    if suppress_message:
+        click.echo(dm_text)
+    click.echo(
+        f"{'Would have sent' if suppress_message else 'Sent'} summary DM to {len(user_ids)} users: {', '.join(user_ids)}"
+    )
+
+
+def build_channel_message(
+    slack_subdomain: str,
+    prs: list[PrSlackInfo],
+    channel_name: str,
+    start_time: float,
+    end_time: float,
+) -> str:
+    """Build a channel-specific summary message."""
+    start_relative = format_relative_time(start_time)
+    end_relative = format_relative_time(end_time)
+
+    message_lines = [
+        f"{AUTOMATION_MESSAGE_PREFIX} I reviewed messages in #{channel_name} from {start_relative} to {end_relative} :robot_dance:.\n\nIt looks like the following PRs might require attention:"
+    ]
+
+    for pr_info in prs:
+        message_lines.append(pr_info.generate_bullet(slack_subdomain))
+
+    return "\n".join(message_lines)
+
+
+def send_channel_message(
+    client: SlackRequestClient,
+    slack_subdomain: str,
+    summary: ChannelSummary,
+    start_time: float,
+    end_time: float,
+    suppress_message: bool = False,
+) -> None:
+    # Skip if there's a recent automation message
+    if has_recent_matching_message(
+        client, summary.channel.id, AUTOMATION_MESSAGE_PREFIX
+    ):
+        return
+
+    needs_work_prs = summary.pr_infos_for_status(PrStatus.NEEDS_WORK)
+    commented_prs = summary.pr_infos_for_status(PrStatus.COMMENTED)
+    all_review_prs = needs_work_prs + commented_prs
+
+    # Skip if nothing to be done
+    if not all_review_prs:
+        return
+
+    # Build and send channel message
+    channel_text = build_channel_message(
+        slack_subdomain,
+        all_review_prs,
+        summary.channel.name,
+        start_time,
+        end_time,
+    )
+
+    if not suppress_message:
+        client.post(
+            "/api/chat.postMessage",
+            data=[
+                ("channel", summary.channel.id),
+                ("text", channel_text),
+                ("unfurl_links", "false"),
+                ("unfurl_media", "false"),
+            ],
+        )
+    else:
+        click.echo(channel_text)
+    click.echo(
+        f"{'Would have sent' if suppress_message else 'Sent'} summary to #{summary.channel.name} with {len(all_review_prs)} PRs"
+    )
+
+
+################################################################################
+# Reaction handling
+################################################################################
+
+
+@dataclass(frozen=True)
+class ReactionConfiguration:
+    bot_approved: str = "white_check_mark"
+    bot_considers_approved: set[str] = field(
+        default_factory=lambda: {"white_check_mark"}
+    )
+
+    bot_merged: str = "package"
+    bot_considers_merged: set[str] = field(default_factory=lambda: {"package"})
+
+    bot_commented: str = "speech_balloon"
+    bot_considers_commented: set[str] = field(
+        default_factory=lambda: {"speech_balloon"}
+    )
+
+    bot_confused: str = "robot_face"
+
+
+def react_to_pr_infos(
+    client: SlackRequestClient,
+    channel_summary: ChannelSummary,
+    reaction_configuration: ReactionConfiguration | None = None,
+):
+    """React to messages based on PR status using stored data."""
+
+    reaction_configuration = reaction_configuration or ReactionConfiguration()
+
+    messages_reacted: set[tuple[str, str]] = set()
+    for pr_info in channel_summary.pr_infos:
+        message_key = (channel_summary.channel.id, pr_info.message.ts)
+
+        # If a Slack message links multiple PRs, react to it to acknowledge but
+        # not hint at statuses.
+        if pr_info.message.message_has_multiple_prs:
+            if (
+                message_key not in messages_reacted
+                and reaction_configuration.bot_confused not in pr_info.message.reactions
+            ):
+                emoji_react(
+                    client,
+                    channel_id=channel_summary.channel.id,
+                    timestamp=pr_info.message.ts,
+                    emoji=reaction_configuration.bot_confused,
+                )
+                messages_reacted.add(message_key)
+            continue
+
+        # Skip if already reacted to this message
+        if message_key in messages_reacted:
+            continue
+
+        # Check if already reacted appropriately
+        if (
+            pr_info.pr.status == PrStatus.APPROVED
+            and reaction_configuration.bot_considers_approved
+            & pr_info.message.reactions
+        ):
+            continue
+        elif (
+            pr_info.pr.status == PrStatus.MERGED
+            and reaction_configuration.bot_considers_merged & pr_info.message.reactions
+        ):
+            continue
+        elif (
+            pr_info.pr.status == PrStatus.COMMENTED
+            and reaction_configuration.bot_considers_commented
+            & pr_info.message.reactions
+        ):
+            continue
+
+        # React based on status
+        if emoji := {
+            PrStatus.APPROVED: reaction_configuration.bot_approved,
+            PrStatus.MERGED: reaction_configuration.bot_merged,
+            PrStatus.COMMENTED: reaction_configuration.bot_commented,
+        }.get(pr_info.pr.status):
+            emoji_react(
+                client,
+                channel_id=channel_summary.channel.id,
+                timestamp=pr_info.message.ts,
+                emoji=emoji,
+            )
+            messages_reacted.add(message_key)
+
+
+################################################################################
+# Orchestration
+################################################################################
+
+
+def process_slack_message(
+    client: SlackRequestClient, channel_id: str, msg: dict, seen_pr_urls: set[str]
+):
+    # Ignore messages the bot previously sent (or similar bots)
+    if msg.get("text", "").startswith(AUTOMATION_MESSAGE_PREFIX):
+        return []
+
+    pr_matches = re.findall(PR_URL_PATTERN, msg.get("text", ""))
+    potential_pr_urls = set(
+        f"https://github.com/{owner}/{repo}/pull/{pr_num}"
+        for owner, repo, pr_num in pr_matches
+    )
+
+    message = ProcessedSlackMessage(
+        # Normalize PR URLs, and filter out any that have previously been seen.
+        # We want the bot to handle each PR only once (per channel), and assume
+        # that:
+        # * process_slack_message is being called for messages in order (so we
+        #   will _not_ skip on the _first_ occurrence of a PR)
+        # * seen_pr_urls is properly scoped to this channel
+        pr_urls=frozenset(potential_pr_urls - seen_pr_urls),
+        reactions=frozenset(reaction["name"] for reaction in msg.get("reactions", [])),
+        message_has_multiple_prs=len(potential_pr_urls) > 1,
+        ts=msg["ts"],
+        channel_id=channel_id,
+    )
+
+    # Skip if there are no PR URLs
+    if not message.pr_urls:
+        return []
+
+    result_pr_infos: list[PrSlackInfo] = []
+
+    # Check all PR statuses in this message
+    for pr_url in message.pr_urls:
+        if pr_url in seen_pr_urls:
+            continue
+        try:
+            pr_info = check_pr_status(pr_url)
+        except Exception as e:
+            click.echo(f"Error checking PR status for {pr_url}: {e}")
+            continue
+
+        result_pr_infos.append(
+            PrSlackInfo(
+                pr=pr_info,
+                message=message,
+            )
+        )
+
+    return result_pr_infos
+
+
+def send_all_notifications(
+    client: SlackRequestClient,
+    slack_subdomain: str,
+    channel_summaries: list[ChannelSummary],
+    start_time: float,
+    end_time: float,
+    user_id: str,
+    suppress_dm: bool = False,
+    suppress_channels: bool = False,
+) -> None:
+    """Send both DM and channel notifications."""
+
+    send_dm_message(
+        client=client,
+        slack_subdomain=slack_subdomain,
+        channel_summaries=channel_summaries,
+        start_time=start_time,
+        end_time=end_time,
+        user_ids=[user_id],
+        suppress_message=suppress_dm,
+    )
+
+    # Send channel-specific summaries
+    for summary in channel_summaries:
+        send_channel_message(
+            client=client,
+            slack_subdomain=slack_subdomain,
+            summary=summary,
+            start_time=start_time,
+            end_time=end_time,
+            suppress_message=suppress_channels,
+        )
