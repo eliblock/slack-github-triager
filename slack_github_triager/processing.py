@@ -1,8 +1,8 @@
 import functools
+import logging
 import re
 from dataclasses import dataclass, field
-
-import click
+from datetime import datetime, timedelta
 
 from slack_github_triager.github import (
     PR_URL_PATTERN,
@@ -18,8 +18,10 @@ from slack_github_triager.slack import (
 )
 from slack_github_triager.slack_client import (
     SlackRequestClient,
+    SlackRequestError,
 )
 
+logger = logging.getLogger(__name__)
 ################################################################################
 # Data classes
 ################################################################################
@@ -170,8 +172,8 @@ def send_dm_message(
             )
 
     if suppress_message:
-        click.echo(dm_text)
-    click.echo(
+        logger.debug(f"output suppressed! Would have sent: '{dm_text}'")
+    logger.info(
         f"{'Would have sent' if suppress_message else 'Sent'} summary DM to {len(user_ids)} users: {', '.join(user_ids)}"
     )
 
@@ -244,8 +246,8 @@ def send_channel_message(
             ],
         )
     else:
-        click.echo(channel_text)
-    click.echo(
+        logger.debug(f"output suppressed! Would have sent: '{channel_text}'")
+    logger.info(
         f"{'Would have sent' if suppress_message else 'Sent'} summary to #{summary.channel.name_with_id_fallback} with {len(all_review_prs)} PRs"
     )
 
@@ -367,7 +369,10 @@ def process_slack_message(
         try:
             pr_info = check_pr_status(pr_url)
         except Exception as e:
-            click.echo(f"Error checking PR status for {pr_url}: {e}")
+            logger.warning(
+                f"Gracefully continuing past error checking PR status for {pr_url}: {e}",
+                exc_info=True,
+            )
             continue
 
         result_pr_infos.append(
@@ -378,3 +383,82 @@ def process_slack_message(
         )
 
     return result_pr_infos
+
+
+def triage(
+    client: SlackRequestClient,
+    reaction_configuration: ReactionConfiguration,
+    slack_subdomain: str,
+    channel_ids: tuple[str],
+    days: int,
+    allow_channel_messages: bool,
+    allow_reactions: bool,
+    summary_dm_user_id: tuple[str],
+):
+    since = (datetime.now() - timedelta(days=days)).timestamp()
+    now = datetime.now().timestamp()
+
+    # Load info for each target channel
+    channels = []
+    for channel_id in channel_ids:
+        try:
+            channel_name = client.get(
+                "/api/conversations.info", params={"channel": channel_id}
+            )["channel"]["name"]
+        except SlackRequestError:
+            logger.warning(
+                f"Gracefully ignoring error fetching channel name for {channel_id}",
+                exc_info=True,
+            )
+            channel_name = channel_id
+        channels.append(ChannelInfo(id=channel_id, name_with_id_fallback=channel_name))
+
+    channel_summaries = []
+    total_messages = 0
+    for channel in channels:
+        logger.info(f"Processing #{channel.name_with_id_fallback} ({channel.id})...")
+        messages = client.get(
+            "/api/conversations.history",
+            params={"channel": channel.id, "oldest": str(since)},
+        )["messages"]
+        total_messages += len(messages)
+
+        pr_infos_for_channel: list[PrSlackInfo] = []
+        seen_urls_for_channel: set[str] = set()
+        for msg in messages:
+            new_pr_infos = process_slack_message(
+                client, channel.id, msg, seen_urls_for_channel
+            )
+            seen_urls_for_channel.update(pr_info.pr.url for pr_info in new_pr_infos)
+            pr_infos_for_channel.extend(new_pr_infos)
+
+        channel_summaries.append(
+            ChannelSummary(channel=channel, pr_infos=tuple(pr_infos_for_channel))
+        )
+
+    send_dm_message(
+        client=client,
+        slack_subdomain=slack_subdomain,
+        reaction_configuration=reaction_configuration,
+        channel_summaries=channel_summaries,
+        start_time=since,
+        end_time=now,
+        user_ids=list(summary_dm_user_id),
+    )
+
+    # Send channel-specific reactions and summaries
+    for summary in channel_summaries:
+        if allow_reactions:
+            react_to_pr_infos(client, summary, reaction_configuration)
+
+        send_channel_message(
+            client=client,
+            slack_subdomain=slack_subdomain,
+            reaction_configuration=reaction_configuration,
+            summary=summary,
+            start_time=since,
+            end_time=now,
+            suppress_message=not allow_channel_messages,
+        )
+
+    logger.info(f"Found {total_messages} messages across {len(channels)} channels")

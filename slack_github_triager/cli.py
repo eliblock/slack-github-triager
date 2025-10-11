@@ -1,7 +1,8 @@
 #!/usr/bin python
 
 import functools
-from datetime import datetime, timedelta
+import logging
+import os
 
 import click
 
@@ -12,18 +13,13 @@ from slack_github_triager.config import (
     reload_config,
 )
 from slack_github_triager.processing import (
-    ChannelInfo,
-    ChannelSummary,
-    PrSlackInfo,
     ReactionConfiguration,
-    process_slack_message,
-    react_to_pr_infos,
-    send_channel_message,
-    send_dm_message,
+)
+from slack_github_triager.processing import (
+    triage as processing_triage,
 )
 from slack_github_triager.slack_client import (
     SlackRequestClient,
-    SlackRequestError,
     fetch_d_cookie,
     get_slack_tokens,
 )
@@ -81,9 +77,31 @@ def ensure_configured(cmd):
 ################################################################################
 # CLI
 ################################################################################
+COLORS = {
+    "WARNING": "\033[93m",  # Yellow
+    "ERROR": "\033[91m",  # Red
+    "CRITICAL": "\033[95m",  # Magenta
+    "DEBUG": "\033[90m",  # Gray
+    "RESET": "\033[0m",  # Reset
+}
+
+
+class ColorFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        color = COLORS.get(record.levelname, "")
+        formatted = super().format(record)
+        if color:
+            return f"{color}{formatted}{COLORS['RESET']}"
+        return formatted
+
+
 @click.group()
 def cli():
-    pass
+    handler = logging.StreamHandler()
+    handler.setFormatter(ColorFormatter("%(message)s"))
+    logging.basicConfig(
+        level=logging.DEBUG if os.getenv("DEBUG") else logging.INFO, handlers=[handler]
+    )
 
 
 @cli.command()
@@ -121,86 +139,30 @@ def triage(
     summary_dm_user_id: tuple[str],
 ):
     client = get_slack_client()
-    since = (datetime.now() - timedelta(days=days)).timestamp()
-    now = datetime.now().timestamp()
-
-    # Load info for each target channel
-    channels = []
-    for channel_id in channel_ids:
-        try:
-            channel_name = client.get(
-                "/api/conversations.info", params={"channel": channel_id}
-            )["channel"]["name"]
-        except SlackRequestError:
-            click.echo("gracefully ignoring channel failure to fetch channel name...")
-            channel_name = channel_id
-        channels.append(ChannelInfo(id=channel_id, name_with_id_fallback=channel_name))
-
-    channel_summaries = []
-    total_messages = 0
-    for channel in channels:
-        click.echo(f"Processing #{channel.name_with_id_fallback} ({channel.id})...")
-        messages = client.get(
-            "/api/conversations.history",
-            params={"channel": channel.id, "oldest": str(since)},
-        )["messages"]
-        total_messages += len(messages)
-
-        pr_infos_for_channel: list[PrSlackInfo] = []
-        seen_urls_for_channel = set()
-        for msg in messages:
-            new_pr_infos = process_slack_message(
-                client, channel.id, msg, seen_urls_for_channel
-            )
-            seen_urls_for_channel.update(pr_info.pr.url for pr_info in new_pr_infos)
-            pr_infos_for_channel.extend(new_pr_infos)
-
-        channel_summaries.append(
-            ChannelSummary(channel=channel, pr_infos=tuple(pr_infos_for_channel))
-        )
-
-    reaction_configuration = ReactionConfiguration(
-        bot_approved=CONFIG.get(ConfigKey.REACTION_APPROVAL_FROM_BOT),
-        bot_considers_approved=set(
-            CONFIG.get(ConfigKey.REACTION_APPROVAL_RECOGNIZED_CSV).split(",")
-        ),
-        bot_commented=CONFIG.get(ConfigKey.REACTION_COMMENTED_FROM_BOT),
-        bot_considers_commented=set(
-            CONFIG.get(ConfigKey.REACTION_COMMENTED_RECOGNIZED_CSV).split(",")
-        ),
-        bot_merged=CONFIG.get(ConfigKey.REACTION_MERGED_FROM_BOT),
-        bot_considers_merged=set(
-            CONFIG.get(ConfigKey.REACTION_MERGED_RECOGNIZED_CSV).split(",")
-        ),
-        bot_confused=CONFIG.get(ConfigKey.REACTION_CONFUSED_FROM_BOT),
-    )
-
-    send_dm_message(
+    processing_triage(
         client=client,
         slack_subdomain=CONFIG.get(ConfigKey.SUBDOMAIN),
-        reaction_configuration=reaction_configuration,
-        channel_summaries=channel_summaries,
-        start_time=since,
-        end_time=now,
-        user_ids=list(summary_dm_user_id),
+        reaction_configuration=ReactionConfiguration(
+            bot_approved=CONFIG.get(ConfigKey.REACTION_APPROVAL_FROM_BOT),
+            bot_considers_approved=set(
+                CONFIG.get(ConfigKey.REACTION_APPROVAL_RECOGNIZED_CSV).split(",")
+            ),
+            bot_commented=CONFIG.get(ConfigKey.REACTION_COMMENTED_FROM_BOT),
+            bot_considers_commented=set(
+                CONFIG.get(ConfigKey.REACTION_COMMENTED_RECOGNIZED_CSV).split(",")
+            ),
+            bot_merged=CONFIG.get(ConfigKey.REACTION_MERGED_FROM_BOT),
+            bot_considers_merged=set(
+                CONFIG.get(ConfigKey.REACTION_MERGED_RECOGNIZED_CSV).split(",")
+            ),
+            bot_confused=CONFIG.get(ConfigKey.REACTION_CONFUSED_FROM_BOT),
+        ),
+        channel_ids=channel_ids,
+        days=days,
+        allow_channel_messages=allow_channel_messages,
+        allow_reactions=allow_reactions,
+        summary_dm_user_id=summary_dm_user_id,
     )
-
-    # Send channel-specific reactions and summaries
-    for summary in channel_summaries:
-        if allow_reactions:
-            react_to_pr_infos(client, summary, reaction_configuration)
-
-        send_channel_message(
-            client=client,
-            slack_subdomain=CONFIG.get(ConfigKey.SUBDOMAIN),
-            reaction_configuration=reaction_configuration,
-            summary=summary,
-            start_time=since,
-            end_time=now,
-            suppress_message=not allow_channel_messages,
-        )
-
-    click.echo(f"Found {total_messages} messages across {len(channels)} channels")
 
 
 if __name__ == "__main__":
