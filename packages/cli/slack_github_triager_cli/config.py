@@ -19,6 +19,10 @@ class ConfigKey(Enum):
     REACTION_MERGED_FROM_BOT = "reaction_merged_from_bot_emoji"
     REACTION_MERGED_RECOGNIZED_CSV = "reaction_merged_recognized_emoji_csv"
     REACTION_CONFUSED_FROM_BOT = "reaction_confused_from_bot_emoji"
+    GITHUB_AUTH_PREFERENCE = "github_auth_preference"
+    GITHUB_APP_ID = "github_app_id"
+    GITHUB_APP_PRIVATE_KEY = "github_app_private_key"
+    GITHUB_TARGET_ORG = "github_target_org"
 
     @classmethod
     def required_keys(cls) -> list["ConfigKey"]:
@@ -32,6 +36,11 @@ class ConfigKey(Enum):
 class SlackAuthPreference(Enum):
     BOT = "bot"
     USER = "user"
+
+
+class GithubAuthPreference(Enum):
+    APP = "app"
+    GH = "gh"
 
 
 class ConfigManager:
@@ -67,6 +76,15 @@ class ConfigManager:
                     return False
             case SlackAuthPreference.USER.value:
                 if not self.get(ConfigKey.D_COOKIE, required=False):
+                    return False
+
+        match self.get(ConfigKey.GITHUB_AUTH_PREFERENCE):
+            case GithubAuthPreference.APP.value:
+                if (
+                    not self.get(ConfigKey.GITHUB_APP_ID, required=False)
+                    or not self.get(ConfigKey.GITHUB_APP_PRIVATE_KEY, required=False)
+                    or not self.get(ConfigKey.GITHUB_TARGET_ORG, required=False)
+                ):
                     return False
 
         return True
@@ -207,7 +225,7 @@ def reload_config(
     config.upsert(
         ConfigKey.SLACK_AUTH_PREFERENCE,
         click.prompt(
-            "Do you prefer to use a bot token or a user token?",
+            "Do you prefer to use a Slack bot token or a Slack user token?",
             type=click.Choice(
                 [SlackAuthPreference.BOT.value, SlackAuthPreference.USER.value]
             ),
@@ -221,7 +239,7 @@ def reload_config(
     match config.get(ConfigKey.SLACK_AUTH_PREFERENCE):
         case SlackAuthPreference.BOT.value:
             current_bot_token = config.get(ConfigKey.SLACK_BOT_TOKEN, required=False)
-            if not current_bot_token or click.confirm("Provide new bot token?"):
+            if not current_bot_token or click.confirm("Provide new Slack bot token?"):
                 config.upsert(
                     ConfigKey.SLACK_BOT_TOKEN,
                     click.prompt(
@@ -256,3 +274,64 @@ def reload_config(
                 config.delete(ConfigKey.SLACK_BOT_TOKEN)
 
             click.echo("Configuration saved!\n")
+
+    config.upsert(
+        ConfigKey.GITHUB_AUTH_PREFERENCE,
+        click.prompt(
+            "Do you prefer to use a GitHub app or the gh CLI?",
+            type=click.Choice(
+                [GithubAuthPreference.APP.value, GithubAuthPreference.GH.value]
+            ),
+            default=config.get(ConfigKey.GITHUB_AUTH_PREFERENCE, required=False),
+            show_default=True
+            if config.get(ConfigKey.GITHUB_AUTH_PREFERENCE, required=False)
+            else False,
+        ),
+    )
+
+    match config.get(ConfigKey.GITHUB_AUTH_PREFERENCE):
+        case GithubAuthPreference.APP.value:
+            config.upsert(
+                ConfigKey.GITHUB_TARGET_ORG,
+                click.prompt(
+                    "Provide your GitHub target organization",
+                    type=str,
+                    default=config.get(ConfigKey.GITHUB_TARGET_ORG, required=False),
+                    show_default=True,
+                ),
+            )
+            config.upsert(
+                ConfigKey.GITHUB_APP_ID,
+                click.prompt(
+                    "Provide your GitHub app ID",
+                    type=str,
+                    default=config.get(ConfigKey.GITHUB_APP_ID, required=False),
+                    show_default=True,
+                ),
+            )
+            config.upsert(
+                ConfigKey.GITHUB_APP_PRIVATE_KEY,
+                click.prompt(
+                    "Provide your GitHub app private key (or hit enter to keep existing)",
+                    type=str,
+                    default=config.get(
+                        ConfigKey.GITHUB_APP_PRIVATE_KEY, required=False
+                    ),
+                    show_default=False,
+                ),
+            )
+        case GithubAuthPreference.GH.value:
+            if config.get(ConfigKey.GITHUB_APP_ID, required=False) and click.confirm(
+                "Clear your GitHub app ID?"
+            ):
+                config.delete(ConfigKey.GITHUB_APP_ID)
+
+            if config.get(
+                ConfigKey.GITHUB_APP_PRIVATE_KEY, required=False
+            ) and click.confirm("Clear your GitHub app private key?"):
+                config.delete(ConfigKey.GITHUB_APP_PRIVATE_KEY)
+
+            if config.get(
+                ConfigKey.GITHUB_TARGET_ORG, required=False
+            ) and click.confirm("Clear your GitHub target organization?"):
+                config.delete(ConfigKey.GITHUB_TARGET_ORG)

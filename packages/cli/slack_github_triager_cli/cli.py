@@ -5,23 +5,27 @@ import logging
 import os
 
 import click
-
-from slack_github_triager.config import (
-    ConfigKey,
-    ConfigManager,
-    SlackAuthPreference,
-    reload_config,
-)
-from slack_github_triager.processing import (
+from slack_github_triager_core.github_client import GithubRequestClient
+from slack_github_triager_core.processing import (
     ReactionConfiguration,
 )
-from slack_github_triager.processing import (
+from slack_github_triager_core.processing import (
     triage as processing_triage,
 )
-from slack_github_triager.slack_client import (
+from slack_github_triager_core.slack_client import (
     SlackRequestClient,
-    fetch_d_cookie,
     get_slack_tokens,
+)
+
+from slack_github_triager_cli.browser_utils import (
+    fetch_d_cookie,
+)
+from slack_github_triager_cli.config import (
+    ConfigKey,
+    ConfigManager,
+    GithubAuthPreference,
+    SlackAuthPreference,
+    reload_config,
 )
 
 ################################################################################
@@ -34,7 +38,7 @@ CONFIG = ConfigManager()
 # Helpers
 ################################################################################
 @functools.lru_cache()
-def get_slack_client() -> "SlackRequestClient":
+def get_slack_client() -> SlackRequestClient:
     match CONFIG.get(ConfigKey.SLACK_AUTH_PREFERENCE):
         case SlackAuthPreference.BOT.value:
             return SlackRequestClient(
@@ -60,6 +64,17 @@ def get_slack_client() -> "SlackRequestClient":
             raise ValueError(
                 f"Invalid slack auth preference: {CONFIG.get(ConfigKey.SLACK_AUTH_PREFERENCE)}"
             )
+
+
+@functools.lru_cache()
+def get_github_client() -> GithubRequestClient | None:
+    if CONFIG.get(ConfigKey.GITHUB_AUTH_PREFERENCE) == GithubAuthPreference.APP.value:
+        return GithubRequestClient(
+            app_id=CONFIG.get(ConfigKey.GITHUB_APP_ID),
+            private_key=CONFIG.get(ConfigKey.GITHUB_APP_PRIVATE_KEY),
+            target_org=CONFIG.get(ConfigKey.GITHUB_TARGET_ORG),
+        )
+    return None
 
 
 def ensure_configured(cmd):
@@ -138,9 +153,9 @@ def triage(
     allow_reactions: bool,
     summary_dm_user_id: tuple[str],
 ):
-    client = get_slack_client()
     processing_triage(
-        client=client,
+        slack_client=get_slack_client(),
+        github_client=get_github_client(),
         slack_subdomain=CONFIG.get(ConfigKey.SUBDOMAIN),
         reaction_configuration=ReactionConfiguration(
             bot_approved=CONFIG.get(ConfigKey.REACTION_APPROVAL_FROM_BOT),

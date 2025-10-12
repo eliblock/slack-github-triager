@@ -1,11 +1,11 @@
 import functools
+import logging
 import re
 import time
-from urllib.parse import urlparse
 
-import click
 import requests
-from selenium import webdriver
+
+logger = logging.getLogger(__name__)
 
 
 ################################################################################
@@ -38,22 +38,6 @@ def get_slack_tokens(subdomain: str, d_cookie: str) -> tuple[str, str]:
     return api_token, enterprise_api_token
 
 
-def fetch_d_cookie(subdomain: str) -> str:
-    driver = webdriver.Chrome()
-    driver.get(f"https://{subdomain}.slack.com")
-
-    while urlparse(driver.current_url).netloc != "app.slack.com":
-        time.sleep(0.1)
-
-    cookies = driver.get_cookies()
-    d_cookie = next(
-        cookie["value"]
-        for cookie in cookies
-        if cookie["domain"] == ".slack.com" and cookie["name"] == "d"
-    )
-    driver.quit()
-
-    return d_cookie
 
 
 ################################################################################
@@ -68,9 +52,7 @@ class SlackRequestError(Exception):
 def _slack_raise_for_status(response: requests.Response):
     response.raise_for_status()
     if not response.json()["ok"]:
-        click.secho(f"Request path: {response.request.path_url}", fg="yellow", err=True)
-        click.secho(f"Request body: {response.request.body}", fg="yellow", err=True)
-        click.secho(f"Response body: {response.text}", fg="red", err=True)
+        logger.error(f"Slack request failed - Path: {response.request.path_url}, Body: {response.request.body}, Response: {response.text}")
 
         raise SlackRequestError("non-OK slack response")
 
@@ -118,9 +100,8 @@ class SlackRequestClient:
             except requests.exceptions.HTTPError as e:
                 if e.response.status_code == 429:
                     retry_after = int(e.response.headers.get("Retry-After", 1))
-                    click.secho(
-                        f"Rate limit hit. Retrying after {retry_after} seconds...",
-                        fg="yellow",
+                    logger.warning(
+                        f"Rate limit hit. Retrying after {retry_after} seconds..."
                     )
                     time.sleep(retry_after)
                 else:

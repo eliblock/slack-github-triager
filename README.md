@@ -98,3 +98,15 @@ like:
 
 Some handy slackmoji are available in [`assets/`](./assets/), including `robot_dance` which is hardcoded into a message
 string.
+
+## Publishing the Core Library
+
+The core library (`slack-github-triager-core`) can be published to PyPI:
+
+```sh
+# Build and publish the core package from workspace root
+uv build packages/core
+uv publish --token YOUR_PYPI_TOKEN
+```
+
+The CLI package is marked as private and won't be published.

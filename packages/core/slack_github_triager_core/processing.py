@@ -4,19 +4,20 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-from slack_github_triager.github import (
+from .github import (
     PR_URL_PATTERN,
     PrInfo,
     PrStatus,
     check_pr_status,
 )
-from slack_github_triager.slack import (
+from .github_client import GithubRequestClient
+from .slack import (
     ChannelInfo,
     emoji_react,
     has_recent_matching_message,
     slack_format_relative_time,
 )
-from slack_github_triager.slack_client import (
+from .slack_client import (
     SlackRequestClient,
     SlackRequestError,
 )
@@ -330,7 +331,10 @@ def react_to_pr_infos(
 
 
 def process_slack_message(
-    client: SlackRequestClient, channel_id: str, msg: dict, seen_pr_urls: set[str]
+    channel_id: str,
+    msg: dict,
+    seen_pr_urls: set[str],
+    github_client: GithubRequestClient | None = None,
 ):
     # Ignore messages the bot previously sent (or similar bots)
     if msg.get("text", "").startswith(AUTOMATION_MESSAGE_PREFIX):
@@ -367,7 +371,7 @@ def process_slack_message(
         if pr_url in seen_pr_urls:
             continue
         try:
-            pr_info = check_pr_status(pr_url)
+            pr_info = check_pr_status(pr_url, github_client=github_client)
         except Exception as e:
             logger.warning(
                 f"Gracefully continuing past error checking PR status for {pr_url}: {e}",
@@ -386,7 +390,7 @@ def process_slack_message(
 
 
 def triage(
-    client: SlackRequestClient,
+    slack_client: SlackRequestClient,
     reaction_configuration: ReactionConfiguration,
     slack_subdomain: str,
     channel_ids: tuple[str],
@@ -394,6 +398,7 @@ def triage(
     allow_channel_messages: bool,
     allow_reactions: bool,
     summary_dm_user_id: tuple[str],
+    github_client: GithubRequestClient | None = None,
 ):
     since = (datetime.now() - timedelta(days=days)).timestamp()
     now = datetime.now().timestamp()
@@ -402,7 +407,7 @@ def triage(
     channels = []
     for channel_id in channel_ids:
         try:
-            channel_name = client.get(
+            channel_name = slack_client.get(
                 "/api/conversations.info", params={"channel": channel_id}
             )["channel"]["name"]
         except SlackRequestError:
@@ -417,7 +422,7 @@ def triage(
     total_messages = 0
     for channel in channels:
         logger.info(f"Processing #{channel.name_with_id_fallback} ({channel.id})...")
-        messages = client.get(
+        messages = slack_client.get(
             "/api/conversations.history",
             params={"channel": channel.id, "oldest": str(since)},
         )["messages"]
@@ -427,7 +432,10 @@ def triage(
         seen_urls_for_channel: set[str] = set()
         for msg in messages:
             new_pr_infos = process_slack_message(
-                client, channel.id, msg, seen_urls_for_channel
+                channel.id,
+                msg,
+                seen_urls_for_channel,
+                github_client=github_client,
             )
             seen_urls_for_channel.update(pr_info.pr.url for pr_info in new_pr_infos)
             pr_infos_for_channel.extend(new_pr_infos)
@@ -437,7 +445,7 @@ def triage(
         )
 
     send_dm_message(
-        client=client,
+        client=slack_client,
         slack_subdomain=slack_subdomain,
         reaction_configuration=reaction_configuration,
         channel_summaries=channel_summaries,
@@ -449,10 +457,10 @@ def triage(
     # Send channel-specific reactions and summaries
     for summary in channel_summaries:
         if allow_reactions:
-            react_to_pr_infos(client, summary, reaction_configuration)
+            react_to_pr_infos(slack_client, summary, reaction_configuration)
 
         send_channel_message(
-            client=client,
+            client=slack_client,
             slack_subdomain=slack_subdomain,
             reaction_configuration=reaction_configuration,
             summary=summary,

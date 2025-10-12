@@ -1,26 +1,7 @@
-[project]
-name = "slack-github-triager"
-version = "0.1.0"
-description = "read slack channels and deal with messages"
-authors = [{name = "Eli Block", email = "3347571+eliblock@users.noreply.github.com"}]
-license = {text = "MIT"}
-readme = "README.md"
-requires-python = ">=3.11"
-dependencies = [
-    "click>=8.1.7",
-    "requests>=2.31.0",
-    "selenium>=4.16.0",
-]
-
-[project.scripts]
-triager = "slack_github_triager.cli:cli"
-
-[project.optional-dependencies]
-dev = []
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.uv]
 dev-dependencies = []
+workspace = { members = ["packages/*"] }

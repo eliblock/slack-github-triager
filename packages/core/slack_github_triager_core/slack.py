@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from slack_github_triager.slack_client import (
+from .slack_client import (
     SlackRequestClient,
 )
 
