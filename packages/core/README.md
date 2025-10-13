@@ -15,26 +15,41 @@ from slack_github_triager_core.slack_client import SlackRequestClient, get_slack
 from slack_github_triager_core.processing import triage, ReactionConfiguration
 from slack_github_triager_core.github_client import GithubRequestClient
 
-# Create Slack client with bot token
-client = SlackRequestClient(
-    subdomain="your-workspace",
-    token="xoxb-your-bot-token",
-    enterprise_token="",
-    cookie="",
-    use_bot=True,
-)
 
-# Or with user session (requires d_cookie from browser)
+# Create a slack client either by implementing SlackClientInterface yourself...
+class MySlackClient(SlackClientInterface):
+    @override
+    def get_channel_name_with_id_fallback(self, *, channel_id: str) -> str:
+        ...
+    @override
+    def open_dm(self, *, user_id: str) -> str:
+        ...
+    ...
+client = MySlackClient()
+# ...or by using the built-in implementation with SlackClient. To use
+# SlackClient either create its underlying SlackRequestClient with a bot token...
+client = SlackClient(
+    slack_client=SlackRequestClient(
+      subdomain="your-workspace",
+      token="xoxb-your-bot-token",
+      enterprise_token="",
+      cookie="",
+      use_bot=True,
+  )
+)
+# ...or with user session (requires d_cookie from browser)
 token, enterprise_token = get_slack_tokens(
     subdomain="your-workspace",
     d_cookie="your-d-cookie-from-browser"
 )
-client = SlackRequestClient(
-    subdomain="your-workspace",
-    token=token,
-    enterprise_token=enterprise_token,
-    cookie="your-d-cookie-from-browser",
-    use_bot=False,
+client = SlackClient(
+    SlackRequestClient(
+      subdomain="your-workspace",
+      token=token,
+      enterprise_token=enterprise_token,
+      cookie="your-d-cookie-from-browser",
+      use_bot=False,
+  )
 )
 
 # Configure reaction emojis for PR status

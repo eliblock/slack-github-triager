@@ -18,8 +18,7 @@ from .slack import (
     slack_format_relative_time,
 )
 from .slack_client import (
-    SlackRequestClient,
-    SlackRequestError,
+    SlackClientInterface,
 )
 
 logger = logging.getLogger(__name__)
@@ -144,7 +143,7 @@ def build_dm_message(
 
 
 def send_dm_message(
-    client: SlackRequestClient,
+    client: SlackClientInterface,
     slack_subdomain: str,
     reaction_configuration: ReactionConfiguration,
     channel_summaries: list[ChannelSummary],
@@ -160,17 +159,9 @@ def send_dm_message(
 
     # Open DM channel and send message
     for user_id in user_ids:
-        dm_channel = client.post("/api/conversations.open", data=[("users", user_id)])
+        dm_channel = client.open_dm(user_id=user_id)
         if not suppress_message:
-            client.post(
-                "/api/chat.postMessage",
-                data=[
-                    ("channel", dm_channel["channel"]["id"]),
-                    ("text", dm_text),
-                    ("unfurl_links", "false"),
-                    ("unfurl_media", "false"),
-                ],
-            )
+            client.post_message(channel_id=dm_channel, text=dm_text)
 
     if suppress_message:
         logger.debug(f"output suppressed! Would have sent: '{dm_text}'")
@@ -204,7 +195,7 @@ def build_channel_message(
 
 
 def send_channel_message(
-    client: SlackRequestClient,
+    client: SlackClientInterface,
     slack_subdomain: str,
     reaction_configuration: ReactionConfiguration,
     summary: ChannelSummary,
@@ -237,15 +228,8 @@ def send_channel_message(
     )
 
     if not suppress_message:
-        client.post(
-            "/api/chat.postMessage",
-            data=[
-                ("channel", summary.channel.id),
-                ("text", channel_text),
-                ("unfurl_links", "false"),
-                ("unfurl_media", "false"),
-            ],
-        )
+        client.post_message(channel_id=summary.channel.id, text=channel_text)
+
     else:
         logger.debug(f"output suppressed! Would have sent: '{channel_text}'")
     logger.info(
@@ -259,7 +243,7 @@ def send_channel_message(
 
 
 def react_to_pr_infos(
-    client: SlackRequestClient,
+    client: SlackClientInterface,
     channel_summary: ChannelSummary,
     reaction_configuration: ReactionConfiguration | None = None,
 ):
@@ -390,14 +374,14 @@ def process_slack_message(
 
 
 def triage(
-    slack_client: SlackRequestClient,
+    slack_client: SlackClientInterface,
     reaction_configuration: ReactionConfiguration,
     slack_subdomain: str,
-    channel_ids: tuple[str],
+    channel_ids: list[str],
     days: int,
     allow_channel_messages: bool,
     allow_reactions: bool,
-    summary_dm_user_id: tuple[str],
+    summary_dm_user_id: list[str],
     github_client: GithubRequestClient | None = None,
 ):
     since = (datetime.now() - timedelta(days=days)).timestamp()
@@ -406,26 +390,23 @@ def triage(
     # Load info for each target channel
     channels = []
     for channel_id in channel_ids:
-        try:
-            channel_name = slack_client.get(
-                "/api/conversations.info", params={"channel": channel_id}
-            )["channel"]["name"]
-        except SlackRequestError:
-            logger.warning(
-                f"Gracefully ignoring error fetching channel name for {channel_id}",
-                exc_info=True,
+        channels.append(
+            ChannelInfo(
+                id=channel_id,
+                name_with_id_fallback=slack_client.get_channel_name_with_id_fallback(
+                    channel_id=channel_id
+                ),
             )
-            channel_name = channel_id
-        channels.append(ChannelInfo(id=channel_id, name_with_id_fallback=channel_name))
+        )
 
     channel_summaries = []
     total_messages = 0
     for channel in channels:
         logger.info(f"Processing #{channel.name_with_id_fallback} ({channel.id})...")
-        messages = slack_client.get(
-            "/api/conversations.history",
-            params={"channel": channel.id, "oldest": str(since)},
-        )["messages"]
+        messages = slack_client.conversation_history(
+            channel_id=channel.id,
+            oldest=str(since),
+        )
         total_messages += len(messages)
 
         pr_infos_for_channel: list[PrSlackInfo] = []

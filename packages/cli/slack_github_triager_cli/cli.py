@@ -13,6 +13,8 @@ from slack_github_triager_core.processing import (
     triage as processing_triage,
 )
 from slack_github_triager_core.slack_client import (
+    SlackClient,
+    SlackClientInterface,
     SlackRequestClient,
     get_slack_tokens,
 )
@@ -38,10 +40,10 @@ CONFIG = ConfigManager()
 # Helpers
 ################################################################################
 @functools.lru_cache()
-def get_slack_client() -> SlackRequestClient:
+def get_slack_client() -> SlackClientInterface:
     match CONFIG.get(ConfigKey.SLACK_AUTH_PREFERENCE):
         case SlackAuthPreference.BOT.value:
-            return SlackRequestClient(
+            client = SlackRequestClient(
                 subdomain=CONFIG.get(ConfigKey.SUBDOMAIN),
                 token=CONFIG.get(ConfigKey.SLACK_BOT_TOKEN),
                 enterprise_token="",
@@ -53,7 +55,7 @@ def get_slack_client() -> SlackRequestClient:
                 subdomain=CONFIG.get(ConfigKey.SUBDOMAIN),
                 d_cookie=CONFIG.get(ConfigKey.D_COOKIE),
             )
-            return SlackRequestClient(
+            client = SlackRequestClient(
                 subdomain=CONFIG.get(ConfigKey.SUBDOMAIN),
                 token=token,
                 enterprise_token=enterprise_token,
@@ -64,6 +66,8 @@ def get_slack_client() -> SlackRequestClient:
             raise ValueError(
                 f"Invalid slack auth preference: {CONFIG.get(ConfigKey.SLACK_AUTH_PREFERENCE)}"
             )
+
+    return SlackClient(slack_client=client)
 
 
 @functools.lru_cache()
@@ -172,11 +176,11 @@ def triage(
             ),
             bot_confused=CONFIG.get(ConfigKey.REACTION_CONFUSED_FROM_BOT),
         ),
-        channel_ids=channel_ids,
+        channel_ids=list(channel_ids),
         days=days,
         allow_channel_messages=allow_channel_messages,
         allow_reactions=allow_reactions,
-        summary_dm_user_id=summary_dm_user_id,
+        summary_dm_user_id=list(summary_dm_user_id),
     )
 
 

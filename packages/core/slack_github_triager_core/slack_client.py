@@ -2,6 +2,8 @@ import functools
 import logging
 import re
 import time
+from abc import ABC, abstractmethod
+from typing import Any, override
 
 import requests
 
@@ -38,8 +40,6 @@ def get_slack_tokens(subdomain: str, d_cookie: str) -> tuple[str, str]:
     return api_token, enterprise_api_token
 
 
-
-
 ################################################################################
 # Slack API Client
 ################################################################################
@@ -52,7 +52,9 @@ class SlackRequestError(Exception):
 def _slack_raise_for_status(response: requests.Response):
     response.raise_for_status()
     if not response.json()["ok"]:
-        logger.error(f"Slack request failed - Path: {response.request.path_url}, Body: {response.request.body}, Response: {response.text}")
+        logger.error(
+            f"Slack request failed - Path: {response.request.path_url}, Body: {response.request.body}, Response: {response.text}"
+        )
 
         raise SlackRequestError("non-OK slack response")
 
@@ -128,3 +130,89 @@ class SlackRequestClient:
         if not self.use_bot:
             data.append(("token", self.enterprise_token))
         return self._make_slack_request("POST", path, data=data, **kwargs).json()
+
+
+class SlackClientInterface(ABC):
+    """
+    Abstract base class defining the Slack client interface.
+    Compatible with both SlackRequestClient and Slack Bolt SDK.
+    """
+
+    @abstractmethod
+    def get_channel_name_with_id_fallback(self, *, channel_id: str) -> str:
+        pass
+
+    @abstractmethod
+    def open_dm(self, *, user_id: str) -> str:
+        pass
+
+    @abstractmethod
+    def post_message(self, *, channel_id: str, text: str) -> None:
+        pass
+
+    @abstractmethod
+    def conversation_history(
+        self, *, channel_id: str, oldest: str
+    ) -> list[dict[str, Any]]:
+        pass
+
+    @abstractmethod
+    def react(self, *, channel_id: str, timestamp: str, emoji: str) -> None:
+        pass
+
+
+class SlackClient(SlackClientInterface):
+    def __init__(self, slack_client: SlackRequestClient):
+        self.slack_client = slack_client
+
+    @override
+    def get_channel_name_with_id_fallback(self, *, channel_id: str) -> str:
+        try:
+            return self.slack_client.get(
+                path="/api/conversations.info", params={"channel": channel_id}
+            )["channel"]["name"]
+        except SlackRequestError:
+            logger.warning(
+                f"Gracefully ignoring error fetching channel name for {channel_id}",
+                exc_info=True,
+            )
+            return channel_id
+
+    @override
+    def open_dm(self, *, user_id: str) -> str:
+        """Open a DM channel and return the channel ID"""
+        return self.slack_client.post(
+            "/api/conversations.open", data=[("users", user_id)]
+        )["channel"]["id"]
+
+    @override
+    def post_message(self, *, channel_id: str, text: str) -> None:
+        self.slack_client.post(
+            "/api/chat.postMessage",
+            data=[
+                ("channel", channel_id),
+                ("text", text),
+                ("unfurl_links", "false"),
+                ("unfurl_media", "false"),
+            ],
+        )
+
+    @override
+    def conversation_history(
+        self, *, channel_id: str, oldest: str
+    ) -> list[dict[str, Any]]:
+        return self.slack_client.get(
+            "/api/conversations.history",
+            params={"channel": channel_id, "oldest": oldest},
+        )["messages"]
+
+    @override
+    def react(self, *, channel_id: str, timestamp: str, emoji: str) -> None:
+        self.slack_client.post(
+            "/api/reactions.add",
+            data=[
+                ("channel", channel_id),
+                ("timestamp", timestamp),
+                ("name", emoji),
+            ],
+        )

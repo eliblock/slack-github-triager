@@ -1,9 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from .slack_client import (
-    SlackRequestClient,
-)
+from slack_github_triager_core.slack_client import SlackClientInterface
 
 
 @dataclass(frozen=True)
@@ -13,21 +11,13 @@ class ChannelInfo:
 
 
 def emoji_react(
-    client: SlackRequestClient, channel_id: str, timestamp: str, emoji: str
+    client: SlackClientInterface, channel_id: str, timestamp: str, emoji: str
 ):
-    pass
-    client.post(
-        "/api/reactions.add",
-        data=[
-            ("channel", channel_id),
-            ("timestamp", timestamp),
-            ("name", emoji),
-        ],
-    )
+    client.react(channel_id=channel_id, timestamp=timestamp, emoji=emoji)
 
 
 def has_recent_matching_message(
-    client: SlackRequestClient,
+    client: SlackClientInterface,
     channel_id: str,
     search_text: str,
     check_range: timedelta | None = None,
@@ -36,13 +26,10 @@ def has_recent_matching_message(
 
     return any(
         search_text in msg.get("text", "")
-        for msg in client.get(
-            "/api/conversations.history",
-            params={
-                "channel": channel_id,
-                "oldest": str((datetime.now() - check_range).timestamp()),
-            },
-        )["messages"]
+        for msg in client.conversation_history(
+            channel_id=channel_id,
+            oldest=str((datetime.now() - check_range).timestamp()),
+        )
     )
 
 
