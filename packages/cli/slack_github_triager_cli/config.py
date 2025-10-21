@@ -18,6 +18,8 @@ class ConfigKey(Enum):
     REACTION_COMMENTED_RECOGNIZED_CSV = "reaction_commented_recognized_emoji_csv"
     REACTION_MERGED_FROM_BOT = "reaction_merged_from_bot_emoji"
     REACTION_MERGED_RECOGNIZED_CSV = "reaction_merged_recognized_emoji_csv"
+    REACTION_CLOSED_FROM_BOT = "reaction_closed_from_bot_emoji"
+    REACTION_CLOSED_RECOGNIZED_CSV = "reaction_closed_recognized_emoji_csv"
     REACTION_CONFUSED_FROM_BOT = "reaction_confused_from_bot_emoji"
     GITHUB_AUTH_PREFERENCE = "github_auth_preference"
     GITHUB_APP_ID = "github_app_id"

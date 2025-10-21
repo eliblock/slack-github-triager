@@ -174,6 +174,10 @@ def triage(
             bot_considers_merged=set(
                 CONFIG.get(ConfigKey.REACTION_MERGED_RECOGNIZED_CSV).split(",")
             ),
+            bot_closed=CONFIG.get(ConfigKey.REACTION_CLOSED_FROM_BOT),
+            bot_considers_closed=set(
+                CONFIG.get(ConfigKey.REACTION_CLOSED_RECOGNIZED_CSV).split(",")
+            ),
             bot_confused=CONFIG.get(ConfigKey.REACTION_CONFUSED_FROM_BOT),
         ),
         channel_ids=list(channel_ids),

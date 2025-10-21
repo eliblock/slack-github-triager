@@ -1,6 +1,6 @@
 [project]
 name = "slack-github-triager-core"
-version = "0.3.0"
+version = "0.3.1"
 description = "Core library for Slack-GitHub triaging functionality"
 authors = [{name = "Eli Block", email = "3347571+eliblock@users.noreply.github.com"}]
 license = {text = "MIT"}

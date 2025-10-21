@@ -20,10 +20,12 @@ class PrStatus(Enum):
     COMMENTED = "commented"
     APPROVED = "approved"
     MERGED = "merged"
+    CLOSED = "closed"
 
 
 @dataclass(frozen=True)
 class _PrStatusData:
+    state: str
     merged_at: str | None
     review_decision: str | None
     reviews: list[dict]
@@ -52,10 +54,13 @@ PR_URL_PATTERN = r"https://github\.com/(\w+)/(\w+)/pull/(\d+)"
 
 
 def _get_status(pr_data: _PrStatusData, author: str) -> PrStatus:
+    if pr_data.state.lower() == "closed":
+        return PrStatus.CLOSED
+
     if pr_data.merged_at:
         return PrStatus.MERGED
 
-    if pr_data.review_decision == "APPROVED":
+    if pr_data.review_decision and pr_data.review_decision.lower() == "approved":
         return PrStatus.APPROVED
 
     human_reviews = [
@@ -133,6 +138,7 @@ def _check_pr_status_with_github_app(
         number=int(pr_number),
         status=_get_status(
             _PrStatusData(
+                state=pr_data["state"],
                 merged_at=pr_data["merged_at"],
                 review_decision=pr_data.get("review_decision"),
                 reviews=[
@@ -180,6 +186,7 @@ def _check_pr_status_with_gh_cli(owner: str, repo: str, pr_number: str) -> PrInf
         number=int(pr_number),
         status=_get_status(
             _PrStatusData(
+                state=pr.get("state"),
                 merged_at=pr.get("mergedAt"),
                 review_decision=pr.get("reviewDecision"),
                 reviews=pr.get("reviews", []),

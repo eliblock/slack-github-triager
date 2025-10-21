@@ -42,6 +42,9 @@ class ReactionConfiguration:
         default_factory=lambda: {"speech_balloon"}
     )
 
+    bot_closed: str = "x"
+    bot_considers_closed: set[str] = field(default_factory=lambda: {"x"})
+
     bot_confused: str = "robot_face"
 
 
@@ -69,6 +72,8 @@ class PrSlackInfo:
         base = f"{pr_link} by {self.pr.author} in `{self.pr.repo}` ({original_thread_link})"
 
         match self.pr.status:
+            case PrStatus.CLOSED:
+                prefix = f"(:{reaction_configuration.bot_closed}:) "
             case PrStatus.COMMENTED:
                 prefix = f"(:{reaction_configuration.bot_commented}:) "
             case PrStatus.APPROVED:
@@ -277,6 +282,11 @@ def react_to_pr_infos(
 
         # Check if already reacted appropriately
         if (
+            pr_info.pr.status == PrStatus.CLOSED
+            and reaction_configuration.bot_considers_closed & pr_info.message.reactions
+        ):
+            continue
+        elif (
             pr_info.pr.status == PrStatus.APPROVED
             and reaction_configuration.bot_considers_approved
             & pr_info.message.reactions
@@ -296,6 +306,7 @@ def react_to_pr_infos(
 
         # React based on status
         if emoji := {
+            PrStatus.CLOSED: reaction_configuration.bot_closed,
             PrStatus.APPROVED: reaction_configuration.bot_approved,
             PrStatus.MERGED: reaction_configuration.bot_merged,
             PrStatus.COMMENTED: reaction_configuration.bot_commented,
