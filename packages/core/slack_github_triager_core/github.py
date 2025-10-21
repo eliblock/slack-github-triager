@@ -60,6 +60,8 @@ def _get_status(pr_data: _PrStatusData, author: str) -> PrStatus:
     if pr_data.merged_at:
         return PrStatus.MERGED
 
+    # When the GitHub app is used, review_decision may not be populated. In this
+    # case, we check for a human-reviewed approval below.
     if pr_data.review_decision and pr_data.review_decision.lower() == "approved":
         return PrStatus.APPROVED
 
@@ -73,6 +75,12 @@ def _get_status(pr_data: _PrStatusData, author: str) -> PrStatus:
         )
     ]
     if human_reviews:
+        states = {review["state"] for review in human_reviews}
+        if "CHANGES_REQUESTED" in states:
+            return PrStatus.COMMENTED
+        elif "APPROVED" in states:
+            return PrStatus.APPROVED
+
         return PrStatus.COMMENTED
 
     return PrStatus.NEEDS_WORK
@@ -142,7 +150,11 @@ def _check_pr_status_with_github_app(
                 merged_at=pr_data["merged_at"],
                 review_decision=pr_data.get("review_decision"),
                 reviews=[
-                    {"author": {"login": review["user"]["login"]}} for review in reviews
+                    {
+                        "author": {"login": review["user"]["login"]},
+                        "state": review["state"],
+                    }
+                    for review in reviews
                 ],
             ),
             author,
